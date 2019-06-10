@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>OTV</short>
+  <description>Overlay Transport Virtualization (OTV)</description>
+  <port protocol="udp" port="8472"/>
+  <port protocol="tcp" port="8472"/>
+</service>

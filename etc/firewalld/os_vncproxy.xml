@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>OS_VNCPROXY</short>
+  <description>OpenStack VNC proxy service</description>
+  <port protocol="tcp" port="6080"/>
+</service>

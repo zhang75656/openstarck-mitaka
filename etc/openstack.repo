@@ -1,0 +1,24 @@
+[fedora-Mitaka]
+name=fedorapeople.org - OpenStack Mitaka.
+baseurl=http://mirror.centos.org/centos/7/cloud/$basearch/openstack-mitaka/
+priority=1
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-SIG-Cloud
+
+[163-CentOS7.2-1511]
+name=CentOS7.2-1511 - mirrors.163.com
+baseurl=http://mirrors.163.com/centos/7.2.1511/os/x86_64/
+priority=10
+enabled=1
+gpgcheck=0
+
+[epel]
+name=Extra Packages for Enterprise Linux 7 - $basearch
+#baseurl=http://download.fedoraproject.org/pub/epel/7/$basearch                                                                                                                                
+mirrorlist=https://mirrors.fedoraproject.org/metalink?repo=epel-7&arch=$basearch
+failovermethod=priority
+priority=20
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-7

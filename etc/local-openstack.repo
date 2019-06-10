@@ -1,0 +1,5 @@
+[local-CentOS7.2-1511]
+name=CentOS7.2-1511
+baseurl=http://<HostName>/openstack-mitaka
+enabled=1
+gpgcheck=0

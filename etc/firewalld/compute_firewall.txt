@@ -1,0 +1,2 @@
+rule family='ipv4' source address='192.168.20.0/24' accept
+rule family='ipv4' service name='ssh' accept'

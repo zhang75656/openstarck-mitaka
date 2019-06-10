@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>OS_KEYSTONE</short>
+  <description>OpenStack keystone service</description>
+  <port protocol="tcp" port="35357"/>
+  <port protocol="tcp" port="5000"/>
+</service>

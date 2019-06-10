@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>OS_HEAT</short>
+  <description>OpenStack heat service</description>
+  <port protocol="tcp" port="8004"/>
+  <port protocol="tcp" port="8000"/>
+</service>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>OS_NOVA</short>
+  <description>OpenStack nova service</description>
+  <port protocol="tcp" port="8774"/>
+</service>

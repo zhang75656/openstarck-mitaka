@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>OS_MANILA</short>
+  <description>OpenStack manila service</description>
+  <port protocol="tcp" port="8786"/>
+</service>

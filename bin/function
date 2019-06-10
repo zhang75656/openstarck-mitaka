@@ -1,0 +1,604 @@
+#!/bin/bash
+
+#导入配置文件
+INST_OS_CONF_FILE=$ROOT_DIR/etc/openstack.conf
+cmd="echo '没有找到配置文件: $INST_OS_CONF_FILE'; exit 1"
+[ -f $INST_OS_CONF_FILE ] && . $INST_OS_CONF_FILE || eval $cmd
+
+
+#安装日志
+export INFO_LOG="$HOME/install-openstack-info.log"
+export ERR_LOG="$HOME/install-openstack-err.log"
+
+#已安装软件的标志文件 存储目录.
+export TAG_DIR="/etc/openstack-mitaka_tag/"
+[ -d $TAG_DIR ] || mkdir -p $TAG_DIR
+
+#
+
+fn_log(){
+    echo -e "`date +%x%X` [`whoami`] [$1\e[0m] $2 \e[0m" |tee -a $3
+}
+
+fn_info_log(){
+    fn_log "INFO" "$@" "$INFO_LOG"
+}
+
+fn_err_log(){
+    fn_log "\e[31mERROR" "$@" "$ERR_LOG"
+    exit 1
+}
+
+fn_warn_log(){
+    fn_log "\e[33mWARNING" "$@" "$INFO_LOG"
+}
+
+fn_err_or_info_log(){
+    if [ $? -eq 0 ]
+    then
+        fn_info_log "执行命令: $@ 成功." 
+    else
+        fn_err_log "\e[31m执行命令: $@ 失败."
+        exit 1
+    fi
+}
+
+fn_warn_or_info_log(){
+    if [ $? -eq 0 ]
+    then
+        fn_info_log "执行命令: $@ 成功." 
+        return 0
+    else
+        fn_warn_log "\e[31m执行命令: $@ 失败."
+        return 1
+    fi
+}
+
+fn_exec_eval(){
+    #功能:执行命令并将命令做为日志输出.
+    #格式: fnuc 'command' 'log'
+    
+    local log="fn_err_or_info_log"
+    if [ "$1" == "-w" ]
+    then
+        log="fn_warn_or_info_log"
+        shift
+    fi
+    
+    echo "$1" |grep -qE '^(yum install)'
+    [ $? -eq 0 -a "$G_PROXY" == "True" ] && . $PROXY_CONF_FILE
+
+    local cmd="$1"
+    local msg="$2"
+    if [ -n "$cmd" ]
+    then
+        if [ "$os_DEBUG" == "debug" ]
+        then
+            fn_info_log "$cmd"
+            unset http_proxy https_proxy ftp_proxy no_proxy cmd msg log
+            return 0
+        else
+            eval "$cmd"
+            $log "$cmd $msg"
+            local retval=$?
+            unset http_proxy https_proxy ftp_proxy no_proxy cmd msg log
+            return $retval
+        fi
+    fi
+}
+
+fn_exec_sleep(){
+    #功能: 执行sleep命令
+    
+    local i
+    echo -en "\e[32m请稍等"
+    for i in `seq 1 $1`
+    do
+        sleep 1 && echo -n "."
+    done
+    echo -e "\e[0m" 
+}
+
+#fn_exec_yum_install(){
+#    #功能:执行软件安装.
+#    #
+#    # 
+#    #   "mp" 或 "MultiProcess" :表示要将yum安装放到后台进行,
+#    #                       以便可并行加速执行安装和配置.
+#    #local MitulProcess=$1
+#    #shift
+#    #可调入后台执行,前台可继续其它操作.
+#    #[ "$MitulProcess" == "mp" -o "$MitulProcess" == "MitulProcess" ] && eval $cmd & || eval $cmd
+#
+#    fn_exec_eval "yum install -y $@"
+#}
+
+#-------------------------[软件安装与配置]------------------------------#
+
+fn_create_password_report(){
+    #功能: 将包含密码的操作生成报表 呈现给管理员.
+
+    local operation=$1
+    local username=$2
+    local password=$3
+    local desc=$4
+    
+    local msg="Operation: ${operation}@Username: ${username}@Password: ${password}@Description: ${desc}"
+    fn_inst_componet_complete_prompt "$msg" |tee -a $HOME/openstack_passwd_report.txt
+}
+
+fn_create_tag_file(){
+    #功能:创建已安装软件的标志文件.
+    date +%x%X > /etc/openstack-mitaka_tag/inst_${1}.tag
+}
+
+fn_check_tag_file(){
+    #功能:检查某软件或操作 是否已安装或已操作的标志文件
+    #   0=找到标志文件.
+    #   1=没有找到标志文件.
+
+    local f
+    local tag=/etc/openstack-mitaka_tag/inst_${1}.tag
+    if [ -f $tag ]
+    then
+        fn_warn_log "发现操作完成标志文件($tag)."
+        return 0
+    else
+        return 1
+    fi
+}
+
+fn_exec_systemctl(){
+    #功能:设置服务开机自启动,并启动服务. 
+
+    local s cmd
+    for s in $@
+    do
+        fn_exec_eval "systemctl enable ${s}.service; systemctl start ${s}.service;"
+        fn_exec_sleep 5
+        fn_exec_eval "systemctl restart ${s}.service"
+		fn_exec_sleep 2
+		systemctl is-failed ${s}.service &>/dev/null && fn_err_log "$s 启动失败."
+    done
+    unset cmd
+}
+
+fn_create_db(){
+    #功能:进入MairaDB,创建OpenStack各组件的数据库,并授权访问.
+    #    
+    #格式: fnuc dbName dbUser [dbPasswd]
+
+    local mysql="mysql -uroot -p$MARIADB_PASSWORD"
+    local passwd=$3
+    [ -z "$passwd" ] && passwd=$(eval echo $`echo $2 |tr 'a-z' 'A-Z'`_PASSWORD)
+
+    $mysql -e "show create database $1" &>/dev/null
+    if [ $? -eq 0 ]
+    then
+        fn_warn_log "$1 数据库已经存在,无需再次创建."
+        return 1
+    else
+        local SqlCmd="CREATE DATABASE $1;"
+        SqlCmd="$SqlCmd GRANT ALL PRIVILEGES ON $1.* TO '$2'@'$CONTROLLER_HOST_NAME' IDENTIFIED BY '$passwd';"
+        SqlCmd="$SqlCmd GRANT ALL PRIVILEGES ON $1.* TO '$2'@'%' IDENTIFIED BY '$passwd';"
+        fn_exec_eval "$mysql -e \"$SqlCmd FLUSH PRIVILEGES;\""
+    fi
+	fn_exec_sleep 3
+	fn_exec_eval "$mysql -e \"show create database $1; show grants for $2\""
+	fn_exec_sleep 2
+	export SHOW_${1}_TABLES="$mysql -e \"use $1; show tables;\""
+    fn_create_password_report "MariaDB DBName:$1" "$2" "$passwd" "MariaDB Access Acount."
+    return 0
+}
+
+fn_check_auth_var(){
+    #功能:检查认证变量.
+
+    #取消代理设置,认证无需代理.
+    unset http_proxy https_proxy ftp_proxy no_proxy 
+
+    env |grep -q 'OS_'
+    if [ $? -eq 0 ]
+    then
+        if [ "${OS_TOKEN}x" != "x" -o "${OS_URL}x" != "x" ]
+        then
+            local warn="OS_TOKEN=$OS_TOKEN , OS_URL=$OS_URL , OS_IDENTITY_API_VERSION=$OS_IDENTITY_API_VERSION"
+            fn_warn_log "$warn 这些变量没有unset, 请在使用后,unset."
+        fi
+    else
+        fn_err_log "请执行:'. openrc.sh', 导入keystone的认证变量."
+    fi
+}
+
+fn_create_service_and_endpoint(){
+    #功能:创建服务和服务的访问点.
+    #   注:调用前需要先 source openrc.sh
+    #
+    #格式: func SrvName:SrvDescription:SrvType [(2|3)*]url [[(2|3)*]url]
+    # 注:
+    #  1. REGION_NAME: 默认在配置文件:etc/openstack.conf中定义.
+    #     若配置文件中没有定义,则默认使用:RegionOne
+    #     若需修改region,则在调用前,先 export REGION_NAME=NewRegionName
+    #  2. [(2|3)*]url :
+    #     若url="2*http://controller:5000/v3", 则awk将把http://controller:5000/v3打印两次,
+    #  若url="http://controller:35357/v3",则awk将原样输出.
+    #  通过此方式,来减少不必要的重复URL.
+
+
+    #检查是否 source xxx-openrc.sh 
+    fn_check_auth_var
+
+    local service=1 epPublic=1 epInternal=1 epAdmin=1 
+    err_handle(){
+        if [ $? -eq 0 ]
+        then
+            fn_warn_log "$1 : $2 已存在,无需再次创建."
+            eval `echo ${1}=0` &>/dev/null
+        fi
+    }
+    chk_exist(){
+        fn_exec_eval -w "openstack service list |grep -q '${1}.*${2}'"
+        err_handle 'service' "$1:$2"
+        fn_exec_eval -w "openstack endpoint list |grep '${1}.*${2}' > _tmp"
+        if [ -s _tmp ]
+        then
+            grep "${1}.*${2}.*public" _tmp > _epPublic
+            err_handle 'epPublic' "$2"
+            grep "${1}.*${2}.*internal" _tmp > _epInternal
+            err_handle 'epInternal' "$2"
+            grep "${1}.*${2}.*admin" _tmp > _epAdmin
+            err_handle 'epAdmin' "$2"
+        fi
+    }
+    chk_url(){
+        if [ -s _tmp ]
+        then
+            if [ -s _$1 ]
+            then
+                local msg="预创建endpoint:$1 $3 : $2 ,却发现已存在: "
+                grep -q $2 _$1 && return 0 || fn_err_log "$msg \n`cat _$1`"
+            fi
+        else
+            return 1
+        fi
+    }
+    
+    [ -z "$REGION_NAME" ] && Region=RegionOne || Region=${REGION_NAME}
+    #重复URL拆分.
+    local sName=${1%%:*}
+    local sDesc=`a=${1#*:}; echo ${a%:*}`
+    local sType=${1##*:}
+
+    #检查Service 和 Endpoint是否已经创建.
+    chk_exist $sName $sType 
+
+    #移动位置参数,使第2个位置参数变为1号位置参数.
+    shift
+    #然后,将剩余的位置参数都做为参数来循环,
+    #若url="2*http://controller:5000/v3", 则awk将把http://controller:5000/v3打印两次,
+    #若url="http://controller:35357/v3",则awk将原样输出.
+    #通过此方式,来减少不必要的重复URL.
+
+    for url in $@
+    do
+        echo $url |awk -F'*' '{if($1==2){print $2,$2}; if($1==3){print $2,$2,$2}}END{if($1~/^http/){print $1}}' >> _urls
+    done
+    urls=(`cat _urls`)
+	
+	local cmd=
+    [ $service -eq 1 ] && cmd="openstack service create --name $sName --description \"$sDesc\" $sType;"
+    if [ $epPublic -eq 1 ]
+    then
+        chk_url epPublic ${urls[0]} $sName
+        [ $? -eq 1 ] && cmd="$cmd openstack endpoint create --region $Region $sType public ${urls[0]};"
+    fi
+
+    if [ $epInternal -eq 1 ]
+    then
+        chk_url epInternal ${urls[1]} $sName
+        [ $? -eq 1 ] && cmd="$cmd openstack endpoint create --region $Region $sType internal ${urls[1]};"
+    fi
+    if [ $epAdmin -eq 1 ]
+    then
+        chk_url epAdmin ${urls[2]} $sName
+        [ $? -eq 1 ] && cmd="$cmd openstack endpoint create --region $Region $sType admin ${urls[2]}"
+    fi
+    fn_exec_eval "$cmd"
+    unset cmd
+    rm -f _tmp _epPublic _epInternal _epAdmin _urls 
+    return 0
+}
+
+fn_create_domain_project_role(){
+    #功能:检查并创建域、项目和角色
+    #   "none":某项不想创建就用none做站位符. 
+    #格式: func DomName:DomDescription ProName:ProDescription:ProDom RoleName
+
+    #检查是否 source xxx-openrc.sh 
+    fn_check_auth_var
+
+    local DomainName=${1%:*}
+    local DomainDesc=${1#*:}
+    local ProjectName=${2%%:*}
+    local ProjectDesc=`a=${2#*:}; echo ${a%:*}`
+    local ProjectDom=${2##*:}
+    local RoleName=$3
+
+    #1:创建, 0:已存在,不创建.
+    local domain=1 project=1 role=1
+    err_handle(){
+        if [ $? -eq 0 ]
+        then
+            fn_warn_log "$1: $2 已存在,无需创建."
+            eval `echo ${1}=0` &>/dev/null
+        fi
+    }
+    
+    #检测Domain Project Role是否需要创建.
+    #若为None则表示不创建.
+    if [ $DomainName == "none" ]
+    then
+        domain=0
+    else
+        fn_exec_eval -w "openstack domain list |tee -a _tmp |grep -q '$DomainName'"
+        err_handle 'domain' "$DomainName"
+    fi
+	
+    [ $domain -eq 1 ] && fn_exec_eval "openstack domain create --description \"$DomainDesc\" $DomainName;"
+	fn_exec_sleep 2
+	
+    if [ $ProjectName == "none" -o "$ProjectDom" == "none" ]
+    then
+        project=0
+    else
+        local cmd1="grep -q '\<$ProjectDom\>' _tmp"
+        local cmd2="openstack domain list |grep -q '\<$ProjectDom\>'"
+        [ -f _tmp ] && fn_exec_eval -w "$cmd1" || fn_exec_eval -w "$cmd2"
+        [ $? -eq 0 ] || fn_err_log "project: $ProjectName 欲属于Domain: $ProjectDom, 但此Domain不存在. "
+
+        unset cmd1 cmd2
+        fn_exec_eval -w "openstack project list |grep -q '\<$ProjectName\>'"
+        err_handle 'project' "$ProjectName"
+    fi
+
+    if [ $RoleName == "none" ]
+    then
+        role=0
+    else
+        fn_exec_eval -w "openstack role list |grep -q '\<$RoleName\>'"
+        err_handle 'role' "$RoleName"
+    fi
+
+    local cmd=
+    [ $project -eq 1 ] && cmd="openstack project create --domain $ProjectDom --description \"$ProjectDesc\" $ProjectName;"
+    [ $role -eq 1 ] && cmd="$cmd openstack role create $RoleName"
+    [ -n "$cmd" ] && fn_exec_eval "$cmd"
+    rm -f _tmp
+    unset cmd
+    return 0
+}
+
+fn_create_user_and_grant(){
+    #功能:检测并创建用户并授权.
+    #   DomName:若为none,表示不创建用户
+    #   ProjectName:若为none,表示不给用户授权.
+    #  
+    #格式: func DomName:UserName:Passwd ProjectName:RoleName
+
+    #检查是否 source xxx-openrc.sh 
+    fn_check_auth_var
+
+    local create=1 add=1
+
+    local DomainName=${1%%:*}
+    local UserName=`a=${1#*:}; echo ${a%:*}`
+    local Password=${1##*:}
+    [ -z $Password ] && Password=${ALL_PASSWORD}
+    local ProjectName=${2%:*}
+    local RoleName=${2#*:}
+    
+    if [ "$DomainName" == "none" ]
+    then
+        create=0
+    else
+        fn_exec_eval -w "openstack domain list |grep -q '\<$DomainName\>'" 
+        [ $? -ne 0 ] && fn_err_log "Domain: $DomainName 不存在,请确认是否需要创建."
+        
+    fi
+    
+    if [ "$ProjectName" == "none" ]
+    then
+        add=0
+    else
+        fn_exec_eval -w "openstack project list |grep -q '\<$ProjectName\>'"
+        [ $? -ne 0 ] && fn_err_log "Project: $ProjectName 不存在,请确认是否需要创建."
+    fi
+
+    if [ "$RoleName" == "none" ]
+	then
+		add=0
+	else
+		fn_exec_eval -w "openstack role list |grep -q '\<$RoleName\>'"
+		[ $? -ne 0 ] && fn_err_log "Role: $RoleName 不存在,请确认是否需要创建."
+	fi
+	
+    [ $create -eq 0 -a $add -eq 0 ] && return 1
+	
+	#若用户已存在,则设置create=0(不创建),然后查此用户是否已在指定项目中担任了$RoleName的角色,
+	#若是,则直接返回,否则,则执行授权操作; 
+	#    注:一个用户可在一个项目中担任多种不同的角色,但不能同时在一个项目中担任多个相同角色,这是没必要的.
+    fn_exec_eval -w "openstack user list |grep -q '\<$UserName\>'"
+    if [ $? -eq 0 ]
+	then
+		fn_warn_log "User: $UserName 已存在,无需创建."
+		create=0
+		if [ $add -ne 0 ]
+		then
+			fn_exec_eval -w "openstack role list --user $UserName --project $ProjectName |grep -q '\<$RoleName\>'"
+			[ $? -eq 0 ] || return 0 
+		fi
+	fi
+
+    local cmd=
+    [ $create -eq 1 ] && cmd="openstack user create --domain $DomainName $UserName --password $Password;"
+    [ $add -eq 1 ] && cmd="$cmd openstack role add --project $ProjectName --user $UserName $RoleName"
+    fn_exec_eval "$cmd"
+    unset cmd
+    return 0
+}
+
+fn_chk_disk_and_create_vg(){
+    #检测要创建LVM vg的磁盘是否可用.
+ 
+    local disks=$(eval echo $`echo $1|tr 'a-z' 'A-Z'`_DISK)
+	local VG_VolName=${1}_volumes
+    if [ -z "$disks" ]
+    then
+        fn_err_log "请修改配置文件中`echo $1|tr 'a-z' 'A-Z'`_DISK,给 $1 提供一个可用的磁盘或分区."
+    else
+        local disk dlist retval diskerrlist
+        for disk in $disks
+        do
+            pvs |grep -q "$disk"; retval=$?
+            fdisk -l $disk &>/dev/null; retval=$(($retval+$?))
+            [ $retval -eq 0 ] && diskerrlist="$diskerrlist $disk" || dlist="$dlist $disk"
+        done
+    fi
+    local msg=
+    [ -n "$diskerrlist" ] && msg="另外,发现这些存储设备有问题: $diskerrlist"
+    [ -n "$dlist" ] && fn_exec_eval "pvcreate $dlist && vgcreate $VG_VolName $dlist" || \
+                       fn_err_log "从提供的存储设备列表中,没有检测到可用设备. $msg"
+    fn_info_log "以下磁盘将作为cinder提供服务使用的磁盘:$dlist\n\e[31m$msg"
+    unset msg
+}
+
+fn_check_file_and_backup(){
+    #功能: 接收一个文件,判断它是否存在,若存在则备份.
+    #      备份需要修改的配置文件,并导出SRV_CONF_FILE变量.
+    #      0=文件存在,并已备份.
+    #      1=文件不存在
+    #格式: func /path/to/ConfFile [againbak]
+    #           againbak: 即保存旧的备份,再把当前配置文件备份为一个新的备份.
+    
+    # $1=/etc/xxx/xxx.conf
+    bak(){
+        cp -a $1 ${1}_bak
+        fn_err_or_info_log "配置文件: $1 已备份为: ${1}_bak ."
+    }
+
+    if [ -f $1 ]
+    then
+        [ -f ${1}_bak ] && fn_info_log "配置文件: $1 已经存在备份,无需备份." || bak $1
+    else
+        fn_err_log "指定的配置文件: $1 不存在,请确认. "
+    fi
+
+    if [ "$2" == "againbak" ]
+    then
+        mv ${1}_bak ${1}_oldbak.`date +%F_%T` && bak $1
+    fi
+    
+    #导出SRV_CONF_FILE, 供fn_exec_openstack-config 函数使用,来修改该配置文件.
+    export SRV_CONF_FILE=$1
+    return 0
+}
+
+fn_exec_openstack-config() {
+	#功能: 封装openstack-conf命令.
+    #   1.接收[段名1|参数1=值1;参数2=值2,....] [段名2|参数1=值1;....] [...]
+    #   注:
+	#	  由于接受参数采用"$@"来进行,它可能导致接收参数不完整的情况,建议传参时,
+	#	直接使用引号包裹所有参数.
+    #     调用此函数传参时,若段名后的参数很多,需要换行续写其它参数时,
+    #   开头必须先写段名,即只有不连续,中间有空格,就必须当新段处理.
+    #   如:
+    #       func "sgmt1:param1=value1;param2=value2
+    #             sgmt1:param3=value3;para4=val4
+    #             sgmt2:para1=v1;p2=v2
+    #             sgmt3:p1=v2
+    #           "  ------>必须用引号引起来. 
+
+    local segment sgmt params
+    
+    local cmd=
+    for segment in $@;do
+        #sgmt="segment1"
+        sgmt=${segment%%|*}
+        #params="param1=value1;param2=value2"
+        params=${segment#*|}
+        for param in `echo $params |tr ';' ' '`;do
+            cmd="openstack-config --set $SRV_CONF_FILE $sgmt `echo $param |tr '=' ' '`"
+            fn_exec_eval "$cmd"
+        done
+    done
+    unset cmd SRV_CONF_FILE
+}
+
+
+#-------------------------[END - 软件安装与配置]------------------------------#
+
+fn_inst_componet_complete_prompt(){
+    #功能:安装完成一个组件时,进行提示.
+    #
+    #格式: func "msg1@msg2[@....]"
+    #       "@": 表示换行.
+
+    echo -e "\e[32m"
+    echo $1 |awk -F'@' '
+            function begin_end(MAX){
+                for(i=1;i<=MAX;i++){
+                    if(i==1 || i==MAX){
+                        printf "#"
+                    }else{
+                        printf "-"
+                    }
+                }
+                print ""
+            }
+            function print_(NUM,I){
+                for(i=1;i<=NUM;i++){
+                   tmp=(I==1)?1:NUM
+                   if(i==tmp){printf "#"}else{printf " "}
+                }
+            }
+            function middle(MAX,STRING){
+                # "#      STRING      #"
+                # begin end,即STRING两端字符的总和.
+                beginEnd=MAX-length(STRING)
+                # BE:两端字符串的总数必须是偶数.
+                BE=(beginEnd%2 == 0)?beginEnd:beginEnd-1
+                print_(BE/2,1)
+                printf "%s",(BE==beginEnd)?STRING:STRING" "
+                print_(BE/2,2)
+                print ""
+            }
+            #ARRAY:Array,接收一个数组.
+            function max(ARRAY){
+                for(i in ARRAY){
+                    int1=ARRAY[i]
+				    mx=(mx>int1)?mx:int1 
+                }
+                return mx
+            }
+           {
+                for(i=1;i<=NF;i++){
+                    arrStrLen[i]=length($i)
+                    arrStr[i]=$i
+                } 
+           } 
+           END{
+                MSL=max(arrStrLen)
+                # 保证最长行的总字符数为偶数.
+                MaxStrLen=(MSL%2==0)?MSL:MSL+1
+                # MaxStrLen+8:保证两头不是直接与最长行紧挨着.
+                MaxStrLen=MaxStrLen+8
+                begin_end(MaxStrLen)
+                for(z=1;z<=NF;z++){
+                    middle(MaxStrLen,arrStr[z])
+                }
+                begin_end(MaxStrLen)
+           }
+    '
+    echo -e "\e[0m"
+}
+

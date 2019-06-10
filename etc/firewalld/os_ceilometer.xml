@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>OS_CEILOMETER</short>
+  <description>OpenStack ceilometer service</description>
+  <port protocol="tcp" port="8777"/>
+</service>

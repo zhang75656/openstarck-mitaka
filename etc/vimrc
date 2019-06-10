@@ -1,0 +1,73 @@
+"启用自动缩进
+set autoindent
+
+"设置 tab键为4个空格.
+set tabstop=4
+set shiftwidth=4
+
+"使用空格填充tab键
+set expandtab
+
+"vim 颜色主体
+colorscheme elflord
+
+"设置预览窗口
+set previewheight=10
+
+"显示匹配的括号"( [ { 和 } ] )"
+set showmatch
+
+"当光标距离上下左右多少时发生窗口滚动.
+set scrolloff=5
+
+"关闭遇到错误时的声音提示
+set noerrorbells
+
+"在vim编辑器下方显示命令
+set showcmd
+set cmdheight=1
+
+"打开VIIM的状态标尺
+set ru
+
+"输入搜索内容时就显示搜索结果
+set incsearch
+
+"搜索时高亮显示被找到的文本
+set hlsearch
+
+"内容多时,换行显示
+set wrap
+
+"通过": commands"命令，告诉我们文件的那一行被改变过.
+set report=1
+
+"设置vim支持256色
+set t_Co=256
+
+"当前行和列高亮显示.
+set cursorline
+set cursorcolumn
+"设置行列高亮显示的风格
+hi CursorLine term=none cterm=reverse ctermbg=Magenta ctermfg=DarkGray
+
+"VIM折叠功能
+"manual     手工定义折叠
+"indent     更多的缩进表示更高级别的折叠
+"expr       用表达式来定义折叠
+"syntax     用语法高亮来定义折叠
+"diff       对没有更改的文本进行折叠
+"marker     对文中的标志折叠
+"
+"常用的折叠快捷键
+"zf     创建折叠(marker有效)
+"zM     关闭所有折叠
+"zr     打开所有折叠
+"zR     循环的打开所有折叠
+"za     若当前打开则关闭,若当前关闭则打开
+"zj     到下一折叠的开始处
+"zk     到上一折叠的末尾
+"[z     到当前打开的折叠的开始处
+"z]     到当前打开的折叠的末尾处
+set fdm=marker
+set foldmethod=indent
